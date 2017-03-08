@@ -22,9 +22,3 @@ protocol len: 0x4
 
 op: 1(arp request) 2(arp ack) 3(rarp request) 4(rarp ack)
 
- 
-
-
-
-
-
