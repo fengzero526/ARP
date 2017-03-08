@@ -1,3 +1,5 @@
+// create by fengzero 2017.3.8
+
 struct ethernet_head
 {
   unsigned char dest_mac[6];
