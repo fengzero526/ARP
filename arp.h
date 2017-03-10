@@ -1,5 +1,11 @@
 // create by fengzero 2017.3.8
 
+#ifndef ARP_H
+#define ARP_H
+#endif
+
+#pragma pack (1)
+
 struct ethernet_head
 {
   unsigned char dest_mac[6];
@@ -14,7 +20,7 @@ struct arp_head
   unsigned char add_len;
   unsigned char pro_len;
   unsigned short option;
-  unsigned char sour_add[6];
+  unsigned char sour_addr[6];
   unsigned long sour_ip;
   unsigned char dest_addr[6];
   unsigned long dest_ip;
@@ -26,5 +32,6 @@ struct arp_packet
   struct ethernet_head eth;
   struct arp_head arp;
 };
+#pragma pack ()
 
 unsigned char* BuildArpPacket(unsigned char *source_mac, unsigned long srcIP, unsigned long destIP);
