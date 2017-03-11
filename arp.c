@@ -1,67 +1,93 @@
 #include<stdio.h>
-#include<netinet/if_ether.h>
+#include<sys/ioctl.h>
+#include<unistd.h>
 #include<errno.h>
-#include<string.h>
-#include<arpa/inet.h>
 #include<memory.h>
+#include<stdlib.h>
+#include<arpa/inet.h>
+#include<netinet/if_ether.h>
 #include<netpacket/packet.h>
-#include<sys/socket.h>
-#include"arp.h"
+#include<net/if.h>
+#include<net/ethernet.h>
 
-int main(int argc, char** argv)
-{
-  if(argc != 2){
-    printf("Usage: fake_ip  fak_mac\n");
-    return -1;
-  }
+#define ETHER_HEADER_LEN sizeof(struct ether_header)
+#define ETHER_ARP_LEN sizeof(struct ether_arp)
+#define ETHER_ARP_PACKET_LEN ETHER_HEADER_LEN+ETHER_ARP_LEN
+#define IP_ADDR_LEN 4
+#define MAC_ADDR_LEN 6
+
+struct ether_arp *fill_arp_packet(const unsigned char *src_mac_addr, const char *src_ip, const char *dst_ip){
+  struct ether_arp *arp_packet;
+  struct in_addr src_in_addr,dst_in_addr;
+  inet_pton(AF_INET, src_ip, &src_in_addr);  
+  inet_pton(AF_INET, dst_ip, &dst_in_addr);
+
+  arp_packet = (struct ether_arp *)malloc(ETHER_ARP_LEN);
+  arp_packet->arp_hrd = htons(ARPHRD_ETHER);
+  arp_packet->arp_pro = htons(ETHERTYPE_IP);
+  arp_packet->arp_hln = MAC_ADDR_LEN;
+  arp_packet->arp_pln = IP_ADDR_LEN;
+  arp_packet->arp_op = htons(ARPOP_REQUEST);
   
-  char* fakeIp;
-  char* desIp;
-  char* mac;
-
-  fakeIp = inet_addr("192.168.0.1");
-  desIp = inet_addr(argv[1]);
-  mac = "7c:04:d0:c5:9b:48"
-
-  int s;
-  s = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ARP));
-  if(s<0){
-    printf("socket raw error: %s\n",strerror(errno));
-    return -1;
-  }
-
-  struct sockaddr_ll saddr_ll;
-  saddr_ll.sll_ifindex = IF_PORT_100BASET;
-  saddr_ll.sll_family = PF_PACKET;
-
-  int ret;
-  char* pack;
-  pack = BuildArpPacket(mac, fakeIp, desIp); 
-  ret = sendto(s, pack, sizeof(*pack), 0, (struct sockaddr*)&saddr_ll, sizeof(struct sockaddr_ll));
-  if(ret > 0){
-    printf("send ok\n");
-  }
-  close(s);
-  return 0;
+  memcpy(arp_packet->arp_sha, src_mac_addr,MAC_ADDR_LEN);
+  memset(arp_packet->arp_tha,0xff,6);
+  memcpy(arp_packet->arp_spa, &src_in_addr, IP_ADDR_LEN);
+  memcpy(arp_packet->arp_tpa, &dst_in_addr, IP_ADDR_LEN);
+  
+  return arp_packet;
 }
 
-unsigned char* BuildArpPacket(unsigned char *source_mac, unsigned long srcIP, unsigned long destIP)
-{
-  static struct arp_packet packet;
-  memset(packet.eth.dest_mac, 0xFF, 6);
-  memcpy(packet.eth.source_mac, source_mac, 6);
-  packet.eth.eh_type = htons(0x0806);
-  
-  packet.arp.hardware_type = htons(0x0001);
-  packet.arp.protocol_type = htons(0x0800);
-  packet.arp.add_len = 0x06;
-  packet.arp.add_len = 0x04;
-  packet.arp.option = htons(0x0001);
-  memcpy(packet.arp.sour_addr, source_mac, 6);
-  packet.arp.sour_ip = srcIP;
-  memset(packet.arp.dest_addr, 0, 6);
-  packet.arp.dest_ip = destIP;
-  memset(packet.arp.padding, 0, 18);
+void arp_request(const char *if_name, const char *dst_ip){
+  struct sockaddr_ll saddr_ll;
+  struct ether_header *eth_header;
+  struct ether_arp *arp_packet;
+  struct ifreq ifr;
 
-  return (unsigned char*)&packet;
+  char buf[ETHER_ARP_PACKET_LEN+18];
+  unsigned char src_mac_addr[MAC_ADDR_LEN];
+  char *src_ip;
+  int sock_raw_fd, ret_len, i;
+
+  sock_raw_fd = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ARP));
+  if (sock_raw_fd == -1 ){
+    printf("socket error: %s\n",strerror(errno));
+  }
+  
+  bzero(&saddr_ll, sizeof(struct sockaddr_ll));
+  bzero(&ifr, sizeof(struct ifreq));
+
+  memcpy(ifr.ifr_name, if_name, strlen(if_name));  
+  
+  if(-1 == ioctl(sock_raw_fd,SIOCGIFINDEX, &ifr)){
+    printf("get eth error: %s\n",strerror(errno));
+  }
+  
+  saddr_ll.sll_ifindex = ifr.ifr_ifindex;
+  saddr_ll.sll_family = PF_PACKET;
+
+  ioctl(sock_raw_fd, SIOCGIFADDR, &ifr);  
+  src_ip = inet_ntoa(((struct sockaddr_in *)&(ifr.ifr_addr))->sin_addr);
+
+  ioctl(sock_raw_fd, SIOCGIFHWADDR, &ifr);
+  memcpy(src_mac_addr, ifr.ifr_hwaddr.sa_data,MAC_ADDR_LEN);
+
+  bzero(buf, ETHER_ARP_PACKET_LEN);
+  eth_header = (struct ether_header *)buf;
+  memcpy(eth_header->ether_shost, src_mac_addr, MAC_ADDR_LEN);
+  memset(eth_header->ether_dhost, 0xff, MAC_ADDR_LEN);
+  eth_header->ether_type = htons(ETHERTYPE_ARP);
+
+  arp_packet = fill_arp_packet(src_mac_addr, src_ip, dst_ip);
+  memcpy(buf+ETHER_HEADER_LEN, arp_packet, ETHER_ARP_LEN);
+  memset(buf+42,0,18);
+
+  ret_len  = sendto(sock_raw_fd, buf, ETHER_ARP_PACKET_LEN+18, 0, (struct sockaddr *)&saddr_ll, sizeof(struct sockaddr_ll));
+  if(ret_len>0)
+    printf("send ok: %d\n",ret_len);
+  
+  close(sock_raw_fd);
+}
+
+int main(int argc, char** argv){
+   arp_request(argv[1],argv[2]); 
 }
